@@ -1,4 +1,5 @@
 #include "imports/stdlib.fc";
+#include "constants.fc";
 
 ;; Arbiter Contract - арбитр для разрешения споров в Escrow
 ;;
@@ -12,9 +13,7 @@ const int op::request_arbitration = 1;  ;; Escrow запрашивает арб�
 const int op::resolve = 2;              ;; Арбитр решает спор
 const int op::change_owner = 3;         ;; Смена владельца
 
-;; Errors
-const int error::invalid_op = 100;
-const int error::unauthorized = 101;
+
 
 ;; =============== Messages ===============
 
@@ -108,15 +107,16 @@ int equal_slices(slice a, slice b) inline {
         .store_uint(winner, 8)       ;; 0=buyer, 1=seller
         .end_cell();
 
-    cell msg = begin_cell()
-        .store_uint(0x18, 6)
-        .store_slice(escrow_address)
-        .store_coins(50000000)       ;; 0.05 TON на газ для Escrow
-        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
-        .store_ref(msg_body)
-        .end_cell();
-    
-    send_raw_message(msg, 1);        ;; mode 1 = pay fees separately
+    send_raw_message(
+        begin_cell()
+            .store_uint(msg_flag::bounceable, 6)
+            .store_slice(escrow_address)
+            .store_coins(gas::arbitration)  ;; 0.05 TON на газ для Escrow
+            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)  ;; body as ref
+            .store_ref(msg_body)
+            .end_cell(),
+        mode::pay_fees_separately
+    );
 }
 
 ;; =============== Get Methods ===============

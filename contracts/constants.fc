@@ -1,0 +1,39 @@
+;; Common Constants - общие константы для всех контрактов
+;;
+;; Этот файл содержит константы, используемые в нескольких контрактах
+
+;; =============== Message Modes ===============
+const int mode::pay_fees_separately = 1;      ;; платить газ отдельно
+const int mode::ignore_errors = 2;            ;; игнорировать ошибки
+const int mode::carry_remaining_value = 64;   ;; отправить всю оставшуюся сумму входящего сообщения
+const int mode::send_all_balance = 128;       ;; отправить весь баланс контракта
+const int mode::destroy_if_zero = 32;         ;; уничтожить контракт если баланс = 0
+const int mode::send_all_destroy = 160;       ;; 128 + 32 = отправить всё и уничтожить
+
+;; =============== Message Flags ===============
+const int flag::bounced = 1;                  ;; bounced message flag
+const int msg_flag::bounceable = 0x18;        ;; 011000 = bounce + ihr_disabled (отключить instant hypercube routing)
+const int msg_flag::non_bounceable = 0x10;    ;; 010000 = non-bounce + ihr_disabled
+
+;; =============== Deal Statuses ===============
+const int status::active = 0;
+const int status::completed = 1;
+const int status::disputed = 2;
+const int status::refunded = 3;
+
+;; =============== Common Errors ===============
+const int error::invalid_op = 100;
+const int error::unauthorized = 101;
+const int error::insufficient_funds = 102;
+const int error::wrong_status = 103;
+const int error::invalid_status = 104;
+const int error::timeout_not_reached = 105;
+
+;; =============== Timeouts ===============
+const int timeout::min = 3600;                ;; 1 час минимум
+const int timeout::max = 172800;              ;; 48 часов максимум
+
+;; =============== Gas Costs ===============
+const int gas::notification = 10000000;       ;; 0.01 TON на уведомления
+const int gas::completion = 10000000;         ;; 0.01 TON на завершение операции
+const int gas::arbitration = 50000000;        ;; 0.05 TON на арбитраж

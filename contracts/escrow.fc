@@ -1,4 +1,5 @@
 #include "imports/stdlib.fc";
+#include "constants.fc";
 
 ;; Escrow Contract - контракт безопасной сделки с арбитражем
 ;;
@@ -19,22 +20,8 @@ const int op::open_dispute = 3;       ;; Открыть спор → вызов 
 const int op::resolve_dispute = 4;    ;; Арбитр решает спор (winner: 0=buyer, 1=seller)
 const int op::refund = 5;             ;; Возврат средств покупателю (при таймауте)
 
-;; Статусы
-const int status::active = 0;
-const int status::completed = 1;
-const int status::disputed = 2;
-const int status::refunded = 3;
-
-;; Errors
-const int error::invalid_op = 100;
-const int error::unauthorized = 101;
-const int error::wrong_status = 102;
-const int error::insufficient_funds = 103;
-const int error::timeout_not_reached = 104;
-
 ;; Константы
 const int min_storage_reserve = 5000000;   ;; 0.005 TON минимальный остаток для операций
-const int completion_gas = 10000000;       ;; 0.01 TON на газ завершения
 
 ;; =============== Messages ===============
 
@@ -67,12 +54,11 @@ const int completion_gas = 10000000;       ;; 0.01 TON на газ заверш�
         throw_unless(error::unauthorized, equal_slices(sender_address, buyer));
         throw_unless(error::wrong_status, status == status::active);
         
-        ;; Отправляем deal_amount продавцу (платим газ отдельно)
-        send_ton(seller, deal_amount, 1);
+        ;; Отправляем deal_amount продавцу
+        send_ton(seller, deal_amount, mode::pay_fees_separately);
         
-        ;; Возвращаем остаток storage_reserve покупателю + self-destruct
-        ;; mode 128 = отправить весь оставшийся баланс + destroy contract
-        send_ton(buyer, 0, 128);
+        ;; Возвращаем весь остаток (storage_reserve - газ) buyer'у + destroy
+        send_ton(buyer, 0, mode::send_all_destroy);
         
         return ();  ;; Контракт уничтожен
     }
@@ -110,14 +96,14 @@ const int completion_gas = 10000000;       ;; 0.01 TON на газ заверш�
         
         if (winner == 0) {
             ;; Buyer победил: получает deal_amount
-            send_ton(buyer, deal_amount, 1);
-            ;; Seller получает остаток storage + self-destruct
-            send_ton(seller, 0, 128);
+            send_ton(buyer, deal_amount, mode::pay_fees_separately);
+            ;; Seller получает остаток storage + destroy
+            send_ton(seller, 0, mode::send_all_destroy);
         } else {
             ;; Seller победил: получает deal_amount
-            send_ton(seller, deal_amount, 1);
-            ;; Buyer получает остаток storage + self-destruct
-            send_ton(buyer, 0, 128);
+            send_ton(seller, deal_amount, mode::pay_fees_separately);
+            ;; Buyer получает остаток storage + destroy
+            send_ton(buyer, 0, mode::send_all_destroy);
         }
         
         return ();  ;; Контракт уничтожен
@@ -131,11 +117,8 @@ const int completion_gas = 10000000;       ;; 0.01 TON на газ заверш�
         ;; Проверяем что прошел таймаут
         throw_unless(error::timeout_not_reached, now() > (created_at + timeout));
         
-        ;; Возвращаем deal_amount buyer'у
-        send_ton(buyer, deal_amount, 1);
-        
-        ;; Остаток storage_reserve тоже buyer'у + self-destruct
-        send_ton(buyer, 0, 128);
+        ;; Возвращаем всё buyer'у: deal_amount + storage + destroy
+        send_ton(buyer, 0, mode::send_all_destroy);
         
         return ();  ;; Контракт уничтожен
     }
