@@ -1,0 +1,141 @@
+#include "imports/stdlib.fc";
+
+;; Arbiter Contract - арбитр для разрешения споров в Escrow
+;;
+;; Storage:
+;;   owner: MsgAddress - владелец контракта (арбитр)
+;;   fee_percent: uint8 - процент комиссии за арбитраж (0-100)
+;;   resolved_disputes: uint64 - количество решенных споров
+
+;; Операции (op codes)
+const int op::request_arbitration = 1;  ;; Escrow запрашивает арбитраж
+const int op::resolve = 2;              ;; Арбитр решает спор
+const int op::change_owner = 3;         ;; Смена владельца
+
+;; Errors
+const int error::invalid_op = 100;
+const int error::unauthorized = 101;
+
+;; =============== Messages ===============
+
+() recv_internal(cell in_msg_full, slice in_msg_body) impure {
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    
+    if (flags & 1) {
+        return ();
+    }
+
+    slice sender_address = cs~load_msg_addr();
+    
+    ;; Пустое сообщение → bounce
+    throw_if(error::invalid_op, in_msg_body.slice_empty?());
+    
+    int op = in_msg_body~load_uint(32);
+    
+    ;; Валидация op code
+    throw_unless(error::invalid_op, (op >= 1) & (op <= 3));
+    
+    (slice owner, int fee_percent, int resolved_disputes) = load_data();
+
+    ;; === Escrow запрашивает арбитраж ===
+    if (op == op::request_arbitration) {
+        ;; Сохраняем запрос (в реальности здесь логика уведомления арбитра)
+        ;; Для простоты пропускаем
+        return ();
+    }
+
+    ;; === Арбитр решает спор ===
+    if (op == op::resolve) {
+        throw_unless(error::unauthorized, equal_slices(sender_address, owner));
+        
+        ;; Читаем адрес Escrow и решение
+        slice escrow_address = in_msg_body~load_msg_addr();
+        int winner = in_msg_body~load_uint(8);  ;; 0=buyer, 1=seller
+        
+        ;; Отправляем решение в Escrow
+        send_resolution(escrow_address, winner);
+        
+        ;; Увеличиваем счетчик решенных споров
+        save_data(owner, fee_percent, resolved_disputes + 1);
+        return ();
+    }
+
+    ;; === Смена владельца ===
+    if (op == op::change_owner) {
+        throw_unless(error::unauthorized, equal_slices(sender_address, owner));
+        
+        slice new_owner = in_msg_body~load_msg_addr();
+        save_data(new_owner, fee_percent, resolved_disputes);
+        return ();
+    }
+
+    throw(error::invalid_op);
+}
+
+;; =============== Storage ===============
+
+(slice, int, int) load_data() inline {
+    slice ds = get_data().begin_parse();
+    
+    return (
+        ds~load_msg_addr(),    ;; owner
+        ds~load_uint(8),       ;; fee_percent
+        ds~load_uint(64)       ;; resolved_disputes
+    );
+}
+
+() save_data(slice owner, int fee_percent, int resolved_disputes) impure inline {
+    set_data(
+        begin_cell()
+            .store_slice(owner)
+            .store_uint(fee_percent, 8)
+            .store_uint(resolved_disputes, 64)
+            .end_cell()
+    );
+}
+
+;; =============== Helpers ===============
+
+int equal_slices(slice a, slice b) inline {
+    return equal_slice_bits(a, b);
+}
+
+;; Отправка сообщения в Escrow контракт с решением
+() send_resolution(slice escrow_address, int winner) impure inline {
+    cell msg_body = begin_cell()
+        .store_uint(4, 32)           ;; op::resolve_dispute
+        .store_uint(winner, 8)       ;; 0=buyer, 1=seller
+        .end_cell();
+
+    cell msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(escrow_address)
+        .store_coins(50000000)       ;; 0.05 TON на газ для Escrow
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(msg_body)
+        .end_cell();
+    
+    send_raw_message(msg, 1);        ;; mode 1 = pay fees separately
+}
+
+;; =============== Get Methods ===============
+
+slice get_owner() method_id {
+    (slice owner, _, _) = load_data();
+    return owner;
+}
+
+int get_fee_percent() method_id {
+    (_, int fee_percent, _) = load_data();
+    return fee_percent;
+}
+
+int get_resolved_disputes() method_id {
+    (_, _, int resolved_disputes) = load_data();
+    return resolved_disputes;
+}
+
+(slice, int, int) get_arbiter_info() method_id {
+    return load_data();
+}
