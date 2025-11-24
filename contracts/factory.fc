@@ -38,25 +38,23 @@ const int storage_reserve = 50000000;     ;; 0.05 TON резерв на storage 
     
     int op = in_msg_body~load_uint(32);
     
-    (slice owner, cell escrow_code, slice arbiter, int total_deployed) = load_data();
-
     if (op == op::create_escrow) {
-        handle_create_escrow(msg_value, sender_address, in_msg_body, owner, escrow_code, arbiter, total_deployed);
+        handle_create_escrow(msg_value, sender_address, in_msg_body);
         return ();
     }
 
     if (op == op::update_code) {
-        handle_update_code(sender_address, in_msg_body, owner, escrow_code, arbiter, total_deployed);
+        handle_update_code(sender_address, in_msg_body);
         return ();
     }
 
     if (op == op::change_arbiter) {
-        handle_change_arbiter(sender_address, in_msg_body, owner, escrow_code, arbiter, total_deployed);
+        handle_change_arbiter(sender_address, in_msg_body);
         return ();
     }
 
     if (op == op::change_owner) {
-        handle_change_owner(sender_address, in_msg_body, owner, escrow_code, arbiter, total_deployed);
+        handle_change_owner(sender_address, in_msg_body);
         return ();
     }
     
@@ -67,19 +65,11 @@ const int storage_reserve = 50000000;     ;; 0.05 TON резерв на storage 
 ;; =============== Operation Handlers ===============
 
 ;; Обработка создания Escrow
-() handle_create_escrow(
-    int msg_value,
-    slice buyer,
-    slice in_msg_body,
-    slice owner,
-    cell escrow_code,
-    slice arbiter,
-    int total_deployed
-) impure inline {
+() handle_create_escrow(int msg_value, slice buyer, slice in_msg_body) impure inline {
     ;; Читаем параметры сделки
     slice seller = in_msg_body~load_msg_addr();
     int deal_amount = in_msg_body~load_coins();
-    int timeout = in_msg_body~load_uint(32);  ;; timeout в секундах (настраивается клиентом)
+    int timeout = in_msg_body~load_uint(32);
     
     ;; Валидация
     int total_cost = deal_amount + storage_reserve + deploy_gas;
@@ -87,6 +77,9 @@ const int storage_reserve = 50000000;     ;; 0.05 TON резерв на storage 
     throw_unless(error::invalid_op, deal_amount >= min_escrow_amount);
     throw_unless(error::invalid_op, timeout > timeout::min);
     throw_unless(error::invalid_op, timeout < timeout::max);
+    
+    ;; Загружаем данные
+    (slice owner, cell escrow_code, slice arbiter, int total_deployed) = load_data();
     
     ;; Создаем StateInit
     cell escrow_data = build_escrow_data(buyer, seller, arbiter, deal_amount, storage_reserve, timeout);
@@ -105,43 +98,28 @@ const int storage_reserve = 50000000;     ;; 0.05 TON резерв на storage 
 }
 
 ;; Обработка обновления кода
-() handle_update_code(
-    slice sender,
-    slice in_msg_body,
-    slice owner,
-    cell escrow_code,
-    slice arbiter,
-    int total_deployed
-) impure inline {
+() handle_update_code(slice sender, slice in_msg_body) impure inline {
+    (slice owner, cell escrow_code, slice arbiter, int total_deployed) = load_data();
     throw_unless(error::unauthorized, equal_slices(sender, owner));
+    
     cell new_code = in_msg_body~load_ref();
     save_data(owner, new_code, arbiter, total_deployed);
 }
 
 ;; Обработка смены арбитра
-() handle_change_arbiter(
-    slice sender,
-    slice in_msg_body,
-    slice owner,
-    cell escrow_code,
-    slice arbiter,
-    int total_deployed
-) impure inline {
+() handle_change_arbiter(slice sender, slice in_msg_body) impure inline {
+    (slice owner, cell escrow_code, slice arbiter, int total_deployed) = load_data();
     throw_unless(error::unauthorized, equal_slices(sender, owner));
+    
     slice new_arbiter = in_msg_body~load_msg_addr();
     save_data(owner, escrow_code, new_arbiter, total_deployed);
 }
 
 ;; Обработка смены владельца
-() handle_change_owner(
-    slice sender,
-    slice in_msg_body,
-    slice owner,
-    cell escrow_code,
-    slice arbiter,
-    int total_deployed
-) impure inline {
+() handle_change_owner(slice sender, slice in_msg_body) impure inline {
+    (slice owner, cell escrow_code, slice arbiter, int total_deployed) = load_data();
     throw_unless(error::unauthorized, equal_slices(sender, owner));
+    
     slice new_owner = in_msg_body~load_msg_addr();
     save_data(new_owner, escrow_code, arbiter, total_deployed);
 }
