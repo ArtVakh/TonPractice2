@@ -3,7 +3,7 @@
 ;; Этот файл содержит константы, используемые в нескольких контрактах
 
 ;; =============== Message Modes ===============
-const int mode::pay_fees_separately = 1;      ;; платить газ отдельно
+const int mode::pay_fees_separately = 1;      ;; комиссия вычитается из баланса отправителя, получатель получает полную сумму
 const int mode::ignore_errors = 2;            ;; игнорировать ошибки
 const int mode::carry_remaining_value = 64;   ;; отправить всю оставшуюся сумму входящего сообщения
 const int mode::send_all_balance = 128;       ;; отправить весь баланс контракта

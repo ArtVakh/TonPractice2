@@ -17,8 +17,8 @@ const int op::change_owner = 4;       ;; Сменить владельца
 
 ;; Константы стоимостей
 const int min_escrow_amount = 100000000;  ;; 0.1 TON минимальная сумма для эскроу
-const int deploy_gas = 100000000;         ;; 0.1 TON на деплой
-const int storage_reserve = 50000000;     ;; 0.05 TON резерв на storage (30 дней)
+const int deploy_gas = 100000000;         ;; 0.1 TON на деплой (mode::pay_fees_separately - берется с баланса Factory)
+const int storage_reserve = 5000000;      ;; 0.005 TON резерв (достаточно для 48ч + операции)
 
 ;; =============== Messages ===============
 
@@ -27,6 +27,8 @@ const int storage_reserve = 50000000;     ;; 0.05 TON резерв на storage 
     int flags = cs~load_uint(4);
     
     ;; Игнорируем bounced сообщения
+    ;; При bounce деньги автоматически зачисляются на баланс Factory
+    ;; Owner может вывести их вручную при необходимости
     if (flags & flag::bounced) {
         return ();
     }
@@ -72,8 +74,7 @@ const int storage_reserve = 50000000;     ;; 0.05 TON резерв на storage 
     int timeout = in_msg_body~load_uint(32);
     
     ;; Валидация
-    int total_cost = deal_amount + storage_reserve + deploy_gas;
-    throw_unless(error::insufficient_funds, msg_value >= total_cost);
+    throw_unless(error::insufficient_funds, msg_value >= (deal_amount + storage_reserve + deploy_gas));
     throw_unless(error::invalid_op, deal_amount >= min_escrow_amount);
     throw_unless(error::invalid_op, timeout > timeout::min);
     throw_unless(error::invalid_op, timeout < timeout::max);
@@ -82,13 +83,12 @@ const int storage_reserve = 50000000;     ;; 0.05 TON резерв на storage 
     (slice owner, cell escrow_code, slice arbiter, int total_deployed) = load_data();
     
     ;; Создаем StateInit
-    cell escrow_data = build_escrow_data(buyer, seller, arbiter, deal_amount, storage_reserve, timeout);
+    cell escrow_data = build_escrow_data(buyer, seller, arbiter, deal_amount, timeout);
     cell state_init = build_state_init(escrow_code, escrow_data);
     slice escrow_addr = calculate_address_by_state_init(state_init);
     
     ;; Деплой
-    int escrow_total = deal_amount + storage_reserve;
-    send_deploy_message(escrow_addr, state_init, escrow_total);
+    send_deploy_message(escrow_addr, state_init, deal_amount + storage_reserve);
     
     ;; Возврат сдачи
     send_ton(buyer, 0, mode::carry_remaining_value);
@@ -99,7 +99,7 @@ const int storage_reserve = 50000000;     ;; 0.05 TON резерв на storage 
 
 ;; Обработка обновления кода
 () handle_update_code(slice sender, slice in_msg_body) impure inline {
-    (slice owner, cell escrow_code, slice arbiter, int total_deployed) = load_data();
+    (slice owner, _, slice arbiter, int total_deployed) = load_data();
     throw_unless(error::unauthorized, equal_slices(sender, owner));
     
     cell new_code = in_msg_body~load_ref();
@@ -108,7 +108,7 @@ const int storage_reserve = 50000000;     ;; 0.05 TON резерв на storage 
 
 ;; Обработка смены арбитра
 () handle_change_arbiter(slice sender, slice in_msg_body) impure inline {
-    (slice owner, cell escrow_code, slice arbiter, int total_deployed) = load_data();
+    (slice owner, cell escrow_code, _, int total_deployed) = load_data();
     throw_unless(error::unauthorized, equal_slices(sender, owner));
     
     slice new_arbiter = in_msg_body~load_msg_addr();
@@ -155,14 +155,13 @@ int equal_slices(slice a, slice b) inline {
 }
 
 ;; Построение Escrow data для StateInit
-cell build_escrow_data(slice buyer, slice seller, slice arbiter, int deal_amount, int storage_reserve, int timeout) inline {
+cell build_escrow_data(slice buyer, slice seller, slice arbiter, int deal_amount, int timeout) inline {
     return begin_cell()
         .store_slice(buyer)
         .store_slice(seller)
         .store_slice(arbiter)
         .store_coins(deal_amount)
-        .store_coins(storage_reserve)
-        .store_uint(0, 8)              ;; status = active
+        .store_uint(status::active, 8)
         .store_uint(now(), 32)         ;; created_at
         .store_uint(timeout, 32)
         .end_cell();
@@ -171,10 +170,11 @@ cell build_escrow_data(slice buyer, slice seller, slice arbiter, int deal_amount
 ;; Построение StateInit
 cell build_state_init(cell code, cell data) inline {
     return begin_cell()
-        .store_uint(0, 2)
-        .store_maybe_ref(code)
-        .store_maybe_ref(data)
-        .store_uint(0, 1)
+        .store_uint(0, 2)           ;; split_depth:(Maybe (## 5)) = nothing (0)
+                                    ;; special:(Maybe TickTock) = nothing (0)
+        .store_maybe_ref(code)      ;; code:(Maybe ^Cell) = Just ^Cell (1 + ref)
+        .store_maybe_ref(data)      ;; data:(Maybe ^Cell) = Just ^Cell (1 + ref)
+        .store_uint(0, 1)           ;; library:(HashmapE 256 SimpleLib) = empty (0)
         .end_cell();
 }
 
@@ -188,18 +188,19 @@ slice calculate_address_by_state_init(cell state_init) inline {
         .begin_parse();
 }
 
-;; Отправка deploy сообщения
+;; Отправка deploy сообщения  
 () send_deploy_message(slice addr, cell state_init, int amount) impure inline {
     send_raw_message(
         begin_cell()
-            .store_uint(msg_flag::bounceable, 6)
-            .store_slice(addr)
-            .store_coins(amount)
-            .store_uint(7, 1 + 4 + 4 + 64 + 32 + 1 + 1)  ;; state_init=1, body=1
-            .store_ref(state_init)
-            .store_uint(0, 1)         ;; empty body ref
+            .store_uint(msg_flag::bounceable, 6)  ;; flags
+            .store_slice(addr)                     ;; destination
+            .store_coins(amount)                   ;; amount
+            .store_uint(0, 1 + 4 + 4 + 64 + 32)   ;; ihr_disabled=0, fees=0, timestamps=0
+            .store_uint(1, 1)                      ;; init=1 (StateInit present)
+            .store_uint(0, 1)                      ;; body=0 (body inline, пустое)
+            .store_ref(state_init)                 ;; StateInit cell
             .end_cell(),
-        mode::pay_fees_separately
+        mode::pay_fees_separately  ;; Комиссия вычитается из баланса Factory, не из amount
     );
 }
 
@@ -243,8 +244,7 @@ slice get_escrow_address(slice buyer, slice seller, int timeout) method_id {
         .store_slice(seller)
         .store_slice(arbiter)
         .store_coins(0)  ;; amount неизвестен заранее, используем 0
-        .store_coins(0)  ;; storage_reserve
-        .store_uint(0, 8)
+        .store_uint(status::active, 8)
         .store_uint(0, 32)  ;; timestamp неизвестен, используем 0
         .store_uint(timeout, 32)
         .end_cell();

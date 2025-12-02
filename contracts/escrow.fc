@@ -8,10 +8,12 @@
 ;;   seller: MsgAddress - продавец
 ;;   arbiter: MsgAddress - арбитр для разрешения споров
 ;;   deal_amount: Coins - сумма сделки (неприкосновенная)
-;;   storage_reserve: Coins - резерв на rent и газ (отдельный от сделки)
 ;;   status: uint8 - 0=active, 1=completed, 2=disputed, 3=refunded
 ;;   created_at: uint32 - timestamp создания
 ;;   timeout: uint32 - timeout в секундах
+;;
+;; Note: storage_reserve не хранится отдельно - он часть баланса контракта.
+;; При завершении mode::send_all_destroy возвращает весь остаток автоматически.
 
 ;; Операции (op codes)
 const int op::release_funds = 1;      ;; Покупатель подтверждает получение → оплата продавцу
@@ -19,9 +21,6 @@ const int op::confirm_delivery = 2;   ;; Продавец подтверждае
 const int op::open_dispute = 3;       ;; Открыть спор → вызов арбитра
 const int op::resolve_dispute = 4;    ;; Арбитр решает спор (winner: 0=buyer, 1=seller)
 const int op::refund = 5;             ;; Возврат средств покупателю (при таймауте)
-
-;; Константы
-const int min_storage_reserve = 5000000;   ;; 0.005 TON минимальный остаток для операций
 
 ;; =============== Messages ===============
 
@@ -36,7 +35,7 @@ const int min_storage_reserve = 5000000;   ;; 0.005 TON минимальный �
 
     slice sender_address = cs~load_msg_addr();
     
-    ;; Пустое init сообщение при деплое - принимаем (данные уже в storage из StateInit)
+    ;; Init сообщение при деплое - принимаем пустое body (данные уже в storage из StateInit)
     if (in_msg_body.slice_empty?()) {
         return ();  ;; Успешный деплой
     }
@@ -47,17 +46,18 @@ const int min_storage_reserve = 5000000;   ;; 0.005 TON минимальный �
     throw_unless(error::invalid_op, (op >= 1) & (op <= 5));
 
     ;; Загружаем текущее состояние (данные были установлены при деплое через StateInit)
-    (slice buyer, slice seller, slice arbiter, int deal_amount, int storage_reserve, int status, int created_at, int timeout) = load_data();
+    (slice buyer, slice seller, slice arbiter, int deal_amount, int status, int created_at, int timeout) = load_data();
 
     ;; === Покупатель подтверждает получение → оплата продавцу ===
     if (op == op::release_funds) {
         throw_unless(error::unauthorized, equal_slices(sender_address, buyer));
         throw_unless(error::wrong_status, status == status::active);
         
-        ;; Отправляем deal_amount продавцу
+        ;; Storage reserve рассчитан точно при деплое → гарантированно хватит на весь timeout
+        ;; Отправляем полный deal_amount продавцу
         send_ton(seller, deal_amount, mode::pay_fees_separately);
         
-        ;; Возвращаем весь остаток (storage_reserve - газ) buyer'у + destroy
+        ;; Возвращаем весь остаток (storage_reserve - rent - gas) buyer'у + destroy
         send_ton(buyer, 0, mode::send_all_destroy);
         
         return ();  ;; Контракт уничтожен
@@ -82,7 +82,7 @@ const int min_storage_reserve = 5000000;   ;; 0.005 TON минимальный �
         throw_unless(error::wrong_status, status == status::active);
         
         ;; Меняем статус на disputed
-        save_data(buyer, seller, arbiter, deal_amount, storage_reserve, status::disputed, created_at, timeout);
+        save_data(buyer, seller, arbiter, deal_amount, status::disputed, created_at, timeout);
         return ();
     }
 
@@ -130,7 +130,7 @@ const int min_storage_reserve = 5000000;   ;; 0.005 TON минимальный �
 ;; =============== Storage ===============
 
 ;; Загрузка данных из хранилища
-(slice, slice, slice, int, int, int, int, int) load_data() inline {
+(slice, slice, slice, int, int, int, int) load_data() inline {
     slice ds = get_data().begin_parse();
     
     return (
@@ -138,7 +138,6 @@ const int min_storage_reserve = 5000000;   ;; 0.005 TON минимальный �
         ds~load_msg_addr(),      ;; seller
         ds~load_msg_addr(),      ;; arbiter
         ds~load_coins(),         ;; deal_amount
-        ds~load_coins(),         ;; storage_reserve
         ds~load_uint(8),         ;; status
         ds~load_uint(32),        ;; created_at
         ds~load_uint(32)         ;; timeout
@@ -146,14 +145,13 @@ const int min_storage_reserve = 5000000;   ;; 0.005 TON минимальный �
 }
 
 ;; Сохранение данных в хранилище
-() save_data(slice buyer, slice seller, slice arbiter, int deal_amount, int storage_reserve, int status, int created_at, int timeout) impure inline {
+() save_data(slice buyer, slice seller, slice arbiter, int deal_amount, int status, int created_at, int timeout) impure inline {
     set_data(
         begin_cell()
             .store_slice(buyer)
             .store_slice(seller)
             .store_slice(arbiter)
             .store_coins(deal_amount)
-            .store_coins(storage_reserve)
             .store_uint(status, 8)
             .store_uint(created_at, 32)
             .store_uint(timeout, 32)
@@ -171,7 +169,7 @@ int equal_slices(slice a, slice b) inline {
 ;; Отправка сообщения с TON
 () send_ton(slice to, int amount, int mode) impure inline {
     cell msg = begin_cell()
-        .store_uint(0x18, 6)           ;; flags
+        .store_uint(msg_flag::non_bounceable, 6)          ;; flags
         .store_slice(to)               ;; destination
         .store_coins(amount)           ;; amount
         .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)  ;; default message headers
@@ -184,37 +182,31 @@ int equal_slices(slice a, slice b) inline {
 
 ;; Получить адрес покупателя
 slice get_buyer() method_id {
-    (slice buyer, _, _, _, _, _, _, _) = load_data();
+    (slice buyer, _, _, _, _, _, _) = load_data();
     return buyer;
 }
 
 ;; Получить адрес продавца
 slice get_seller() method_id {
-    (_, slice seller, _, _, _, _, _, _) = load_data();
+    (_, slice seller, _, _, _, _, _) = load_data();
     return seller;
 }
 
 ;; Получить адрес арбитра
 slice get_arbiter() method_id {
-    (_, _, slice arbiter, _, _, _, _, _) = load_data();
+    (_, _, slice arbiter, _, _, _, _) = load_data();
     return arbiter;
 }
 
 ;; Получить сумму сделки (чистая, неприкосновенная)
 int get_deal_amount() method_id {
-    (_, _, _, int deal_amount, _, _, _, _) = load_data();
+    (_, _, _, int deal_amount, _, _, _) = load_data();
     return deal_amount;
-}
-
-;; Получить резерв на storage
-int get_storage_reserve() method_id {
-    (_, _, _, _, int storage_reserve, _, _, _) = load_data();
-    return storage_reserve;
 }
 
 ;; Получить статус сделки
 int get_status() method_id {
-    (_, _, _, _, _, int status, _, _) = load_data();
+    (_, _, _, _, int status, _, _) = load_data();
     return status;
 }
 
@@ -225,18 +217,18 @@ int get_status() method_id {
 
 ;; Получить время создания
 int get_created_at() method_id {
-    (_, _, _, _, _, _, int created_at, _) = load_data();
+    (_, _, _, _, _, int created_at, _) = load_data();
     return created_at;
 }
 
 ;; Получить timeout
 int get_timeout() method_id {
-    (_, _, _, _, _, _, _, int timeout) = load_data();
+    (_, _, _, _, _, _, int timeout) = load_data();
     return timeout;
 }
 
 ;; Проверка истек ли timeout
 int is_expired() method_id {
-    (_, _, _, _, _, _, int created_at, int timeout) = load_data();
+    (_, _, _, _, _, int created_at, int timeout) = load_data();
     return now() > (created_at + timeout);
 }
