@@ -18,8 +18,7 @@ const int msg_flag::non_bounceable = 0x10;    ;; 010000 = non-bounce + ihr_disab
 ;; =============== Deal Statuses ===============
 const int status::active = 0;
 const int status::completed = 1;
-const int status::disputed = 2;
-const int status::refunded = 3;
+const int status::refunded = 2;
 
 ;; =============== Common Errors ===============
 const int error::invalid_op = 100;

@@ -6,14 +6,12 @@
 ;; Storage:
 ;;   owner: MsgAddress - владелец фабрики
 ;;   escrow_code: Cell - код Escrow контракта для деплоя
-;;   arbiter: MsgAddress - дефолтный арбитр для всех сделок
 ;;   total_deployed: uint64 - всего задеплоено контрактов
 
 ;; Операции (op codes)
 const int op::create_escrow = 1;      ;; Создать новый Escrow контракт
 const int op::update_code = 2;        ;; Обновить код Escrow (owner only)
-const int op::change_arbiter = 3;     ;; Сменить дефолтного арбитра
-const int op::change_owner = 4;       ;; Сменить владельца
+const int op::change_owner = 3;       ;; Сменить владельца
 
 ;; Константы стоимостей
 const int min_escrow_amount = 100000000;  ;; 0.1 TON минимальная сумма для эскроу
@@ -50,11 +48,6 @@ const int storage_reserve = 5000000;      ;; 0.005 TON резерв (доста�
         return ();
     }
 
-    if (op == op::change_arbiter) {
-        handle_change_arbiter(sender_address, in_msg_body);
-        return ();
-    }
-
     if (op == op::change_owner) {
         handle_change_owner(sender_address, in_msg_body);
         return ();
@@ -80,10 +73,10 @@ const int storage_reserve = 5000000;      ;; 0.005 TON резерв (доста�
     throw_unless(error::invalid_op, timeout < timeout::max);
     
     ;; Загружаем данные
-    (slice owner, cell escrow_code, slice arbiter, int total_deployed) = load_data();
+    (slice owner, cell escrow_code, int total_deployed) = load_data();
     
     ;; Создаем StateInit
-    cell escrow_data = build_escrow_data(buyer, seller, arbiter, deal_amount, timeout);
+    cell escrow_data = build_escrow_data(buyer, seller, deal_amount, timeout);
     cell state_init = build_state_init(escrow_code, escrow_data);
     slice escrow_addr = calculate_address_by_state_init(state_init);
     
@@ -94,55 +87,44 @@ const int storage_reserve = 5000000;      ;; 0.005 TON резерв (доста�
     send_ton(buyer, 0, mode::carry_remaining_value);
     
     ;; Обновляем счетчик
-    save_data(owner, escrow_code, arbiter, total_deployed + 1);
+    save_data(owner, escrow_code, total_deployed + 1);
 }
 
 ;; Обработка обновления кода
 () handle_update_code(slice sender, slice in_msg_body) impure inline {
-    (slice owner, _, slice arbiter, int total_deployed) = load_data();
+    (slice owner, _, int total_deployed) = load_data();
     throw_unless(error::unauthorized, equal_slices(sender, owner));
     
     cell new_code = in_msg_body~load_ref();
-    save_data(owner, new_code, arbiter, total_deployed);
-}
-
-;; Обработка смены арбитра
-() handle_change_arbiter(slice sender, slice in_msg_body) impure inline {
-    (slice owner, cell escrow_code, _, int total_deployed) = load_data();
-    throw_unless(error::unauthorized, equal_slices(sender, owner));
-    
-    slice new_arbiter = in_msg_body~load_msg_addr();
-    save_data(owner, escrow_code, new_arbiter, total_deployed);
+    save_data(owner, new_code, total_deployed);
 }
 
 ;; Обработка смены владельца
 () handle_change_owner(slice sender, slice in_msg_body) impure inline {
-    (slice owner, cell escrow_code, slice arbiter, int total_deployed) = load_data();
+    (slice owner, cell escrow_code, int total_deployed) = load_data();
     throw_unless(error::unauthorized, equal_slices(sender, owner));
     
     slice new_owner = in_msg_body~load_msg_addr();
-    save_data(new_owner, escrow_code, arbiter, total_deployed);
+    save_data(new_owner, escrow_code, total_deployed);
 }
 
 ;; =============== Storage ===============
 
-(slice, cell, slice, int) load_data() inline {
+(slice, cell, int) load_data() inline {
     slice ds = get_data().begin_parse();
     
     return (
         ds~load_msg_addr(),    ;; owner
         ds~load_ref(),         ;; escrow_code
-        ds~load_msg_addr(),    ;; arbiter
         ds~load_uint(64)       ;; total_deployed
     );
 }
 
-() save_data(slice owner, cell escrow_code, slice arbiter, int total_deployed) impure inline {
+() save_data(slice owner, cell escrow_code, int total_deployed) impure inline {
     set_data(
         begin_cell()
             .store_slice(owner)
             .store_ref(escrow_code)
-            .store_slice(arbiter)
             .store_uint(total_deployed, 64)
             .end_cell()
     );
@@ -155,11 +137,10 @@ int equal_slices(slice a, slice b) inline {
 }
 
 ;; Построение Escrow data для StateInit
-cell build_escrow_data(slice buyer, slice seller, slice arbiter, int deal_amount, int timeout) inline {
+cell build_escrow_data(slice buyer, slice seller, int deal_amount, int timeout) inline {
     return begin_cell()
         .store_slice(buyer)
         .store_slice(seller)
-        .store_slice(arbiter)
         .store_coins(deal_amount)
         .store_uint(status::active, 8)
         .store_uint(now(), 32)         ;; created_at
@@ -188,7 +169,7 @@ slice calculate_address_by_state_init(cell state_init) inline {
         .begin_parse();
 }
 
-;; Отправка deploy сообщения  
+;; Отправка deploy сообщения
 () send_deploy_message(slice addr, cell state_init, int amount) impure inline {
     send_raw_message(
         begin_cell()
@@ -220,46 +201,16 @@ slice calculate_address_by_state_init(cell state_init) inline {
 ;; =============== Get Methods ===============
 
 slice get_owner() method_id {
-    (slice owner, _, _, _) = load_data();
+    (slice owner, _, _) = load_data();
     return owner;
 }
 
-slice get_arbiter() method_id {
-    (_, _, slice arbiter, _) = load_data();
-    return arbiter;
-}
-
 int get_total_deployed() method_id {
-    (_, _, _, int total_deployed) = load_data();
+    (_, _, int total_deployed) = load_data();
     return total_deployed;
 }
 
-;; Предсказание адреса будущего Escrow контракта
-slice get_escrow_address(slice buyer, slice seller, int timeout) method_id {
-    (_, cell escrow_code, slice arbiter, _) = load_data();
-    
-    ;; Создаем такой же StateInit как при деплое
-    cell escrow_data = begin_cell()
-        .store_slice(buyer)
-        .store_slice(seller)
-        .store_slice(arbiter)
-        .store_coins(0)  ;; amount неизвестен заранее, используем 0
-        .store_uint(status::active, 8)
-        .store_uint(0, 32)  ;; timestamp неизвестен, используем 0
-        .store_uint(timeout, 32)
-        .end_cell();
-    
-    cell state_init = begin_cell()
-        .store_uint(0, 2)
-        .store_maybe_ref(escrow_code)
-        .store_maybe_ref(escrow_data)
-        .store_uint(0, 1)
-        .end_cell();
-    
-    return calculate_address_by_state_init(state_init);
-}
-
-(slice, slice, int) get_factory_info() method_id {
-    (slice owner, _, slice arbiter, int total_deployed) = load_data();
-    return (owner, arbiter, total_deployed);
+(slice, int) get_factory_info() method_id {
+    (slice owner, _, int total_deployed) = load_data();
+    return (owner, total_deployed);
 }
